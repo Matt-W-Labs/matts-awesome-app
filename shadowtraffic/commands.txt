@@ -1,5 +1,0 @@
-# retail run with --watch
-docker run --env-file license.env -v $(pwd)/postgres-retail.json:/home/config.json shadowtraffic/shadowtraffic:latest --config /home/config.json --sample 10 --stdout --watch
-
-# retail run
-docker run --env-file license.env -v $(pwd)/postgres-retail.json:/home/config.json shadowtraffic/shadowtraffic:latest --config /home/config.json --sample 100
