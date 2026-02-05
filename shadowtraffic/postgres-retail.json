@@ -34,7 +34,7 @@
                 "orderId": { "_gen": "uuid" },
                 "customerId": {
                     "_gen": "lookup",
-                    "table": "customers",
+                    "table": "prod.customers",
                     "path": ["row", "customerId"]
                 },
                 "orderNumber": {

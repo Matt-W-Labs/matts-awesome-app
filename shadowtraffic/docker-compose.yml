@@ -1,0 +1,9 @@
+services:
+  shadowtraffic:
+    build: .
+    env_file:
+      - license.env
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    # Uncomment to override default command with watch mode:
+    # command: ["--config", "/home/config.json", "--sample", "10", "--stdout", "--watch"]
