@@ -1,7 +1,7 @@
 {
     "generators": [
         {
-            "table": "prod.customers",
+            "table": "customers",
             "row": {
                 "customerId": { "_gen": "uuid" },
                 "name": {
@@ -29,12 +29,12 @@
             }
         },
         {
-            "table": "prod.orders",
+            "table": "orders",
             "row": {
                 "orderId": { "_gen": "uuid" },
                 "customerId": {
                     "_gen": "lookup",
-                    "table": "prod.customers",
+                    "table": "customers",
                     "path": ["row", "customerId"]
                 },
                 "orderNumber": {
@@ -70,9 +70,9 @@
             "connectionConfigs": {
                 "host": "host.docker.internal",
                 "port": 5432,
-                "username": "matts_awesome_app_user",
-                "password": "Roscoe!Q@",
-                "db": "matts_awesome_app_db"
+                "username": "postgres",
+                "password": "postgres",
+                "db": "postgres"
             }
         }
     }
