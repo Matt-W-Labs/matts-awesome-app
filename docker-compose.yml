@@ -1,0 +1,343 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: retail-postgres
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-postgres}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-postgres}
+      POSTGRES_DB: ${POSTGRES_DB:-postgres}
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./init-scripts/postgres/01-init.sql:/docker-entrypoint-initdb.d/01-init.sql
+      - ./logs/postgres:/var/log/postgresql
+    command:
+      - "postgres"
+      - "-c"
+      - "wal_level=logical"
+      - "-c"
+      - "max_replication_slots=4"
+      - "-c"
+      - "max_wal_senders=4"
+      - "-c"
+      - "logging_collector=on"
+      - "-c"
+      - "log_directory=/var/log/postgresql"
+      - "-c"
+      - "log_filename=postgresql-%Y-%m-%d.log"
+      - "-c"
+      - "log_statement=all"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  clickhouse:
+    image: clickhouse/clickhouse-server:24.1
+    container_name: retail-clickhouse
+    environment:
+      CLICKHOUSE_USER: ${CLICKHOUSE_USER:-default}
+      CLICKHOUSE_PASSWORD: ${CLICKHOUSE_PASSWORD:-clickhouse}
+      CLICKHOUSE_DB: ${CLICKHOUSE_DB:-retail}
+    ports:
+      - "8123:8123"
+      - "9000:9000"
+    volumes:
+      - clickhouse_data:/var/lib/clickhouse
+      - ./init-scripts/clickhouse/01-init.sql:/docker-entrypoint-initdb.d/01-init.sql
+      - ./logs/clickhouse:/var/log/clickhouse-server
+    depends_on:
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "clickhouse-client", "--query", "SELECT 1"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  # Ensure ClickHouse database and tables are created
+  clickhouse-init:
+    image: clickhouse/clickhouse-server:24.1
+    container_name: retail-clickhouse-init
+    volumes:
+      - ./init-scripts/clickhouse/01-init.sql:/init.sql:ro
+    depends_on:
+      clickhouse:
+        condition: service_healthy
+    entrypoint: >
+      /bin/bash -c "
+      echo 'Initializing ClickHouse database...';
+      clickhouse-client --host clickhouse --password clickhouse --multiquery --queries-file /init.sql;
+      echo 'ClickHouse initialization complete!';
+      "
+    restart: "no"
+
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: retail-backend
+    environment:
+      POSTGRES_HOST: postgres
+      POSTGRES_PORT: 5432
+      POSTGRES_USER: ${POSTGRES_USER:-postgres}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-postgres}
+      POSTGRES_DB: ${POSTGRES_DB:-postgres}
+      CLICKHOUSE_HOST: clickhouse
+      CLICKHOUSE_PORT: 8123
+      CLICKHOUSE_USER: ${CLICKHOUSE_USER:-default}
+      CLICKHOUSE_PASSWORD: ${CLICKHOUSE_PASSWORD:-clickhouse}
+      CLICKHOUSE_DB: ${CLICKHOUSE_DB:-retail}
+    ports:
+      - "8000:8000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      clickhouse:
+        condition: service_healthy
+    volumes:
+      - ./backend/app:/app/app
+      - ./logs/backend:/var/log/app
+    command: uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload --access-log --log-level info
+
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    container_name: retail-frontend
+    environment:
+      VITE_API_URL: http://localhost:8000
+    ports:
+      - "5173:5173"
+    depends_on:
+      - backend
+    volumes:
+      - ./frontend/src:/app/src
+      - ./frontend/public:/app/public
+      - ./logs/frontend:/var/log/app
+    command: npm run dev -- --host
+
+  # PeerDB Services for CDC
+  peerdb-catalog:
+    image: postgres:16-alpine
+    container_name: peerdb-catalog
+    environment:
+      POSTGRES_USER: peerdb
+      POSTGRES_PASSWORD: peerdb
+      POSTGRES_DB: peerdb
+    volumes:
+      - peerdb_catalog_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U peerdb -d peerdb"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  temporal:
+    image: temporalio/auto-setup:1.24
+    container_name: peerdb-temporal
+    environment:
+      - DB=postgres12
+      - DB_PORT=5432
+      - POSTGRES_USER=peerdb
+      - POSTGRES_PWD=peerdb
+      - POSTGRES_SEEDS=peerdb-catalog
+      - DYNAMIC_CONFIG_FILE_PATH=/etc/temporal/dynamicconfig/development.yaml
+    volumes:
+      - ./init-scripts/peerdb/temporal-dynamicconfig.yaml:/etc/temporal/dynamicconfig/development.yaml
+    depends_on:
+      peerdb-catalog:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "tctl", "--address", "temporal:7233", "cluster", "health"]
+      interval: 10s
+      timeout: 10s
+      retries: 10
+      start_period: 60s
+
+  # Register Temporal search attributes for PeerDB
+  temporal-init:
+    image: temporalio/auto-setup:1.24
+    container_name: peerdb-temporal-init
+    depends_on:
+      temporal:
+        condition: service_healthy
+    entrypoint: >
+      /bin/bash -c "
+      echo 'Registering Temporal search attributes...';
+      echo 'Y' | tctl --address temporal:7233 admin cluster add-search-attributes --name MirrorName --type Keyword || true;
+      echo 'Temporal initialization complete!';
+      "
+    restart: "no"
+
+  minio:
+    image: minio/minio:latest
+    container_name: peerdb-minio
+    environment:
+      MINIO_ROOT_USER: peerdb
+      MINIO_ROOT_PASSWORD: peerdb123
+    command: server /data --console-address ":9001"
+    ports:
+      - "9002:9000"
+      - "9001:9001"
+    volumes:
+      - minio_data:/data
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  minio-setup:
+    image: minio/mc:latest
+    container_name: peerdb-minio-setup
+    depends_on:
+      minio:
+        condition: service_healthy
+    entrypoint: >
+      /bin/sh -c "
+      mc alias set peerdb http://minio:9000 peerdb peerdb123;
+      mc mb peerdb/peerdb --ignore-existing;
+      exit 0;
+      "
+
+  peerdb-flow-worker:
+    image: ghcr.io/peerdb-io/flow-worker:stable-v0.36.6
+    container_name: peerdb-flow-worker
+    environment:
+      TEMPORAL_HOST_PORT: temporal:7233
+      PEERDB_CATALOG_HOST: peerdb-catalog
+      PEERDB_CATALOG_PORT: 5432
+      PEERDB_CATALOG_USER: peerdb
+      PEERDB_CATALOG_PASSWORD: peerdb
+      PEERDB_CATALOG_DATABASE: peerdb
+      AWS_ACCESS_KEY_ID: peerdb
+      AWS_SECRET_ACCESS_KEY: peerdb123
+      AWS_ENDPOINT_URL_S3: http://minio:9000
+      AWS_REGION: us-east-1
+    depends_on:
+      temporal-init:
+        condition: service_completed_successfully
+      minio-setup:
+        condition: service_completed_successfully
+
+  peerdb-flow-snapshot-worker:
+    image: ghcr.io/peerdb-io/flow-snapshot-worker:stable-v0.36.6
+    container_name: peerdb-flow-snapshot-worker
+    environment:
+      TEMPORAL_HOST_PORT: temporal:7233
+      PEERDB_CATALOG_HOST: peerdb-catalog
+      PEERDB_CATALOG_PORT: 5432
+      PEERDB_CATALOG_USER: peerdb
+      PEERDB_CATALOG_PASSWORD: peerdb
+      PEERDB_CATALOG_DATABASE: peerdb
+      AWS_ACCESS_KEY_ID: peerdb
+      AWS_SECRET_ACCESS_KEY: peerdb123
+      AWS_ENDPOINT_URL_S3: http://minio:9000
+      AWS_REGION: us-east-1
+    depends_on:
+      temporal-init:
+        condition: service_completed_successfully
+      minio-setup:
+        condition: service_completed_successfully
+
+  peerdb-flow-api:
+    image: ghcr.io/peerdb-io/flow-api:stable-v0.36.6
+    container_name: peerdb-flow-api
+    environment:
+      TEMPORAL_HOST_PORT: temporal:7233
+      PEERDB_CATALOG_HOST: peerdb-catalog
+      PEERDB_CATALOG_PORT: 5432
+      PEERDB_CATALOG_USER: peerdb
+      PEERDB_CATALOG_PASSWORD: peerdb
+      PEERDB_CATALOG_DATABASE: peerdb
+      AWS_ACCESS_KEY_ID: peerdb
+      AWS_SECRET_ACCESS_KEY: peerdb123
+      AWS_ENDPOINT_URL_S3: http://minio:9000
+      AWS_REGION: us-east-1
+      PEERDB_BUCKET_NAME: peerdb
+    ports:
+      - "8112:8112"
+      - "8113:8113"
+    depends_on:
+      temporal-init:
+        condition: service_completed_successfully
+    healthcheck:
+      test: ["CMD", "wget", "-q", "--spider", "http://localhost:8113/v1/version"]
+      interval: 10s
+      timeout: 5s
+      retries: 30
+      start_period: 30s
+
+  peerdb-server:
+    image: ghcr.io/peerdb-io/peerdb-server:stable-v0.36.6
+    container_name: peerdb-server
+    environment:
+      PEERDB_CATALOG_HOST: peerdb-catalog
+      PEERDB_CATALOG_PORT: 5432
+      PEERDB_CATALOG_USER: peerdb
+      PEERDB_CATALOG_PASSWORD: peerdb
+      PEERDB_CATALOG_DATABASE: peerdb
+      PEERDB_PASSWORD: peerdb
+      PEERDB_FLOW_SERVER_ADDRESS: grpc://peerdb-flow-api:8112
+      RUST_LOG: info
+      RUST_BACKTRACE: 1
+    ports:
+      - "9900:9900"
+    depends_on:
+      peerdb-catalog:
+        condition: service_healthy
+      peerdb-flow-api:
+        condition: service_healthy
+    stop_signal: SIGINT
+
+  peerdb-ui:
+    image: ghcr.io/peerdb-io/peerdb-ui:stable-v0.36.6
+    container_name: peerdb-ui
+    environment:
+      DATABASE_URL: postgres://peerdb:peerdb@peerdb-catalog:5432/peerdb
+      PEERDB_FLOW_SERVER_HTTP: http://peerdb-flow-api:8113
+      NEXTAUTH_SECRET: peerdb-secret-key-change-in-production
+      NEXTAUTH_URL: http://localhost:3000
+    ports:
+      - "3000:3000"
+    depends_on:
+      - peerdb-server
+
+  # PeerDB setup - creates peers and CDC flow
+  peerdb-setup:
+    image: curlimages/curl:latest
+    container_name: peerdb-setup
+    volumes:
+      - ./init-scripts/peerdb/setup-peers.sh:/setup-peers.sh:ro
+    entrypoint: ["/bin/sh", "/setup-peers.sh"]
+    depends_on:
+      peerdb-flow-api:
+        condition: service_healthy
+      clickhouse-init:
+        condition: service_completed_successfully
+      postgres:
+        condition: service_healthy
+    restart: "no"
+
+  # Data seeding with ShadowTraffic - runs after PeerDB CDC is set up
+  shadowtraffic:
+    image: shadowtraffic/shadowtraffic:latest
+    container_name: retail-shadowtraffic
+    env_file:
+      - ./shadowtraffic/license.env
+    volumes:
+      - ./shadowtraffic/postgres-retail.json:/home/config.json
+    command: ["--config", "/home/config.json", "--sample", "500", "--seed", "12345"]
+    depends_on:
+      peerdb-setup:
+        condition: service_completed_successfully
+    restart: "no"
+
+volumes:
+  postgres_data:
+  clickhouse_data:
+  peerdb_catalog_data:
+  minio_data:

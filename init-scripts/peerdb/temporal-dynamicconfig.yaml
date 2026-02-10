@@ -1,0 +1,10 @@
+# Temporal dynamic configuration for PeerDB
+frontend.enableClientVersionCheck:
+  - value: true
+    constraints: {}
+history.persistenceMaxQPS:
+  - value: 3000
+    constraints: {}
+frontend.persistenceMaxQPS:
+  - value: 3000
+    constraints: {}

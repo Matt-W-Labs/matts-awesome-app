@@ -3,27 +3,33 @@
         {
             "table": "customers",
             "row": {
-                "customerId": { "_gen": "uuid" },
+                "customer_id": { "_gen": "uuid" },
                 "name": {
                     "_gen": "string", "expr": "#{Name.fullName}"
                 },
                 "birthday": {
-                    "_gen": "string", "expr": "#{Date.birthday '18','80'}"
-                },
-                "directSubscription": {
-                    "_gen": "boolean"
-                },
-                "membershipLevel": {
-                    "_gen": "oneOf", "choices": ["free", "pro", "elite"]
-                },
-                "shippingAddress": {
-                    "_gen": "string", "expr": "#{Address.fullAddress}"
-                },
-                "activationDate": {
                     "_gen": "formatDateTime",
+                    "format": "yyyy-MM-dd",
                     "ms": {
                         "_gen": "uniformDistribution",
-                        "bounds": [ 1710176905, { "_gen": "now" } ]
+                        "bounds": [ -820454400000, 1136073600000 ]
+                    }
+                },
+                "direct_subscription": {
+                    "_gen": "boolean"
+                },
+                "membership_level": {
+                    "_gen": "oneOf", "choices": ["free", "pro", "elite"]
+                },
+                "shipping_address": {
+                    "_gen": "string", "expr": "#{Address.fullAddress}"
+                },
+                "activation_date": {
+                    "_gen": "formatDateTime",
+                    "format": "yyyy-MM-dd'T'HH:mm:ss",
+                    "ms": {
+                        "_gen": "uniformDistribution",
+                        "bounds": [ 1704067200000, { "_gen": "now" } ]
                     }
                 }
             }
@@ -31,14 +37,11 @@
         {
             "table": "orders",
             "row": {
-                "orderId": { "_gen": "uuid" },
-                "customerId": {
+                "order_id": { "_gen": "uuid" },
+                "customer_id": {
                     "_gen": "lookup",
                     "table": "customers",
-                    "path": ["row", "customerId"]
-                },
-                "orderNumber": {
-                    "_gen": "sequentialInteger"
+                    "path": ["row", "customer_id"]
                 },
                 "product": { "_gen": "string", "expr": "#{Commerce.productName}" },
                 "backordered": {
@@ -54,9 +57,16 @@
                     "sd": 20
                 },
                 "description": { "_gen": "string", "expr": "#{Lorem.paragraph}" },
-                "create_ts": { "_gen": "now" },
-                "creditCardNumber": { "_gen": "string", "expr": "#{Business.creditCardNumber}" },
-                "discountPercent": {
+                "create_ts": {
+                    "_gen": "formatDateTime",
+                    "format": "yyyy-MM-dd'T'HH:mm:ss",
+                    "ms": {
+                        "_gen": "uniformDistribution",
+                        "bounds": [ 1704067200000, { "_gen": "now" } ]
+                    }
+                },
+                "credit_card_number": { "_gen": "string", "expr": "#{Business.creditCardNumber}" },
+                "discount_percent": {
                     "_gen": "uniformDistribution",
                     "bounds": [0, 10],
                     "decimals": 0
@@ -68,7 +78,7 @@
         "pg": {
             "kind": "postgres",
             "connectionConfigs": {
-                "host": "host.docker.internal",
+                "host": "postgres",
                 "port": 5432,
                 "username": "postgres",
                 "password": "postgres",
